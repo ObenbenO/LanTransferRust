@@ -1,0 +1,34 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# MSVC / link debug symbols (often next to .exe when copied out of target/)
+*.pdb
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+
+# Editors / IDEs (uncomment if you never want these in repo)
+# .vscode/
+# .idea/
+# *.iml
+
+# Local env / secrets (create if needed; never commit real secrets)
+.env
+.env.*
+!.env.example
+
+# Logs / dumps
+*.log

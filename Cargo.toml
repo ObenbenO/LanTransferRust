@@ -1,0 +1,25 @@
+[package]
+name = "lan_transfer"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "lan_transfer"
+path = "src/main.rs"
+
+[dependencies]
+enigo = "0.6"
+eframe = { version = "0.30", default-features = false, features = ["default_fonts", "glow"] }
+get_if_addrs = "0.5"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+chrono = "0.4"
+rfd = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+uuid = { version = "1", features = ["v4"] }
+# 截屏：跨平台；Windows 可另开 feature `wgc` 走 Graphics Capture（需在 target 上启用）。未使用 scrap（已弃用）、未使用 quinn（局域网 TCP + TCP_NODELAY 即可）。
+xcap = { version = "0.9", features = ["image"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
