@@ -10,14 +10,14 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use std::thread;
 use std::time::Duration;
 
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
-use image::{DynamicImage, ExtendedColorType, ImageEncoder, RgbaImage};
+use image::{ExtendedColorType, ImageEncoder, RgbaImage};
 use xcap::Monitor;
 
 use crate::api::types::{ApiError, RemotePointerEventDto, VideoFrameDto};
@@ -225,16 +225,34 @@ fn parse_frame_payload(payload: &[u8]) -> Option<VideoFrameDto> {
     }
 }
 
-fn encode_jpeg_from_rgba(img: &RgbaImage, quality: u8) -> Result<Vec<u8>, ApiError> {
-    // image 0.25 的 JpegEncoder 仅支持 L8 / Rgb8，Rgba8 会直接 Unsupported。
-    let rgb = DynamicImage::ImageRgba8(img.clone()).into_rgb8();
-    let w = rgb.width();
-    let h = rgb.height();
-    let mut out = Vec::new();
-    let enc = JpegEncoder::new_with_quality(&mut out, quality);
-    enc.write_image(rgb.as_raw(), w, h, ExtendedColorType::Rgb8)
+fn encode_jpeg_from_rgba_reuse(
+    img: &RgbaImage,
+    quality: u8,
+    rgb_buf: &mut Vec<u8>,
+    out: &mut Vec<u8>,
+) -> Result<(), ApiError> {
+    let w = img.width();
+    let h = img.height();
+    let need = (w as usize)
+        .saturating_mul(h as usize)
+        .saturating_mul(3);
+    if rgb_buf.len() != need {
+        rgb_buf.resize(need, 0);
+    }
+    let rgba = img.as_raw();
+    let mut j = 0usize;
+    for px in rgba.chunks_exact(4) {
+        rgb_buf[j] = px[0];
+        rgb_buf[j + 1] = px[1];
+        rgb_buf[j + 2] = px[2];
+        j += 3;
+    }
+
+    out.clear();
+    let enc = JpegEncoder::new_with_quality(out, quality);
+    enc.write_image(rgb_buf.as_slice(), w, h, ExtendedColorType::Rgb8)
         .map_err(|e| ApiError::new("RD_JPEG", format!("JPEG 编码失败: {e}")))?;
-    Ok(out)
+    Ok(())
 }
 
 fn client_reader_loop(mut r: TcpStream, shutdown: Arc<AtomicBool>) {
@@ -499,8 +517,11 @@ fn run_host_session(mut stream: TcpStream, expected_token: String) -> Result<(),
     };
 
     let mut inbound_acc: Vec<u8> = Vec::new();
+    let mut rgb_buf: Vec<u8> = Vec::new();
+    let mut jpeg_buf: Vec<u8> = Vec::new();
 
     loop {
+        let tick = Instant::now();
         match host_drain_client_control_on_stream(
             &mut stream,
             &mut inbound_acc,
@@ -526,23 +547,24 @@ fn run_host_session(mut stream: TcpStream, expected_token: String) -> Result<(),
         };
         let w = rgba.width();
         let h = rgba.height();
-        let jpeg = match encode_jpeg_from_rgba(&rgba, JPEG_QUALITY) {
-            Ok(j) => j,
-            Err(_) => {
-                thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
-                continue;
-            }
-        };
-        let mut payload = Vec::with_capacity(1 + 12 + jpeg.len());
+        if encode_jpeg_from_rgba_reuse(&rgba, JPEG_QUALITY, &mut rgb_buf, &mut jpeg_buf).is_err() {
+            thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
+            continue;
+        }
+        let mut payload = Vec::with_capacity(1 + 12 + jpeg_buf.len());
         payload.push(MSG_JPEG);
         payload.extend_from_slice(&w.to_le_bytes());
         payload.extend_from_slice(&h.to_le_bytes());
-        payload.extend_from_slice(&(jpeg.len() as u32).to_le_bytes());
-        payload.extend_from_slice(&jpeg);
+        payload.extend_from_slice(&(jpeg_buf.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&jpeg_buf);
         if write_framed_capped(&mut stream, &payload, MAX_FRAME_BYTES).is_err() {
             break;
         }
-        thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
+        let frame_budget = Duration::from_millis(FRAME_INTERVAL_MS);
+        let elapsed = tick.elapsed();
+        if elapsed < frame_budget {
+            thread::sleep(frame_budget - elapsed);
+        }
     }
 
     let _ = stream.shutdown(std::net::Shutdown::Both);
