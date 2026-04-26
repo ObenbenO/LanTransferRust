@@ -232,6 +232,20 @@ impl WindowsSendInputInjector {
         Self
     }
 
+    fn vk_text_keypress(&mut self, vk: u16, with_shift: bool) -> Result<(), ApiError> {
+        if with_shift {
+            self.send_vk(0x10, true, false)?;
+        }
+        let r1 = self.send_vk(vk, true, false);
+        let r2 = self.send_vk(vk, false, false);
+        if with_shift {
+            let _ = self.send_vk(0x10, false, false);
+        }
+        r1?;
+        r2?;
+        Ok(())
+    }
+
     fn send_modifier(&mut self, bit: i32, down: bool) -> Result<(), ApiError> {
         let vk = match bit {
             MOD_SHIFT => 0x10u16,
@@ -247,7 +261,21 @@ impl WindowsSendInputInjector {
         if key_code > 0 && key_code < 0x110000 {
             if let Some(ch) = char::from_u32(key_code as u32) {
                 if (modifiers & MOD_MASK) == 0 && down && !ch.is_control() {
+                    if ch.is_ascii_alphanumeric() || ch == ' ' {
+                        let vk = if ch == ' ' {
+                            Some(0x20u16)
+                        } else {
+                            vk_from_char(ch)
+                        };
+                        if let Some(vk) = vk {
+                            let need_shift = ch.is_ascii_uppercase();
+                            return self.vk_text_keypress(vk, need_shift);
+                        }
+                    }
                     return self.send_unicode(ch);
+                }
+                if ch == ' ' {
+                    return self.send_vk(0x20, down, false);
                 }
                 if let Some(vk) = vk_from_char(ch) {
                     return self.send_vk(vk, down, false);

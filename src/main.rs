@@ -379,6 +379,7 @@ struct LanTransferApp {
     remote_last_sent_pos: Option<(i32, i32)>,
     remote_last_move_sent_at: Instant,
     remote_pending_move: Option<(f64, f64, i32)>,
+    remote_last_mod_mask: i32,
     remote_prev_maximized: Option<bool>,
     remote_ime_buffer: String,
 
@@ -502,6 +503,7 @@ impl LanTransferApp {
             remote_last_sent_pos: None,
             remote_last_move_sent_at: Instant::now() - Duration::from_secs(1),
             remote_pending_move: None,
+            remote_last_mod_mask: 0,
             remote_prev_maximized: None,
             remote_ime_buffer: String::new(),
             status,
@@ -1457,6 +1459,7 @@ impl LanTransferApp {
         self.remote_last_sent_pos = None;
         self.remote_last_move_sent_at = Instant::now() - Duration::from_secs(1);
         self.remote_pending_move = None;
+        self.remote_last_mod_mask = 0;
         self.remote_ime_buffer.clear();
     }
 
@@ -1753,12 +1756,49 @@ impl LanTransferApp {
         let Some(view) = view_state else {
             return;
         };
+        self.sync_remote_modifiers(ctx, view.has_focus);
         if !view.has_focus {
             return;
         }
 
         self.handle_remote_pointer(ctx, view);
         self.handle_remote_keyboard_and_wheel(ctx, view);
+    }
+
+    fn sync_remote_modifiers(&mut self, ctx: &egui::Context, focused: bool) {
+        const RD_KEY_CONTROL: i32 = -113;
+        const RD_KEY_SHIFT: i32 = -114;
+        const RD_KEY_ALT: i32 = -115;
+        const RD_KEY_META: i32 = -116;
+
+        let cur = if focused {
+            ctx.input(|i| Self::modifiers_to_mask(i.modifiers))
+        } else {
+            0
+        };
+        let prev = self.remote_last_mod_mask;
+        let changed = cur ^ prev;
+        if changed == 0 {
+            return;
+        }
+        let send = |bit: i32, key: i32| {
+            if (changed & bit) == 0 {
+                return;
+            }
+            let down = (cur & bit) != 0;
+            let _ = api::remote_client::remote_client_send_key(RemoteKeyEventDto {
+                key_code: key,
+                down,
+                modifiers: cur,
+            });
+        };
+
+        send(1, RD_KEY_SHIFT);
+        send(2, RD_KEY_CONTROL);
+        send(4, RD_KEY_ALT);
+        send(8, RD_KEY_META);
+
+        self.remote_last_mod_mask = cur;
     }
 
     fn handle_remote_pointer(&mut self, ctx: &egui::Context, view: RemoteViewState) {
@@ -1924,7 +1964,7 @@ impl LanTransferApp {
                         egui::MouseWheelUnit::Line => delta.y * 50.0,
                         egui::MouseWheelUnit::Page => delta.y * 500.0,
                     };
-                    let lines = (-dy / 50.0).round().clamp(-32.0, 32.0);
+                    let lines = (dy / 50.0).round().clamp(-32.0, 32.0);
                     if lines == 0.0 {
                         continue;
                     }
