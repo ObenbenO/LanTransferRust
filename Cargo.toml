@@ -21,5 +21,8 @@ uuid = { version = "1", features = ["v4"] }
 # 截屏：跨平台；Windows 可另开 feature `wgc` 走 Graphics Capture（需在 target 上启用）。未使用 scrap（已弃用）、未使用 quinn（局域网 TCP + TCP_NODELAY 即可）。
 xcap = { version = "0.9", features = ["image"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

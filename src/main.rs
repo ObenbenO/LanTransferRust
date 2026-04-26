@@ -304,6 +304,14 @@ struct PendingDrop {
     pos: egui::Pos2,
 }
 
+#[derive(Clone, Copy)]
+struct RemoteViewState {
+    rect: egui::Rect,
+    draw_size: (f32, f32),
+    frame_size: (f32, f32),
+    has_focus: bool,
+}
+
 #[derive(Clone, Default)]
 enum SelectedTarget {
     #[default]
@@ -369,6 +377,8 @@ struct LanTransferApp {
     remote_left_down: bool,
     remote_right_down: bool,
     remote_last_sent_pos: Option<(i32, i32)>,
+    remote_last_move_sent_at: Instant,
+    remote_pending_move: Option<(f64, f64, i32)>,
     remote_prev_maximized: Option<bool>,
     remote_ime_buffer: String,
 
@@ -490,6 +500,8 @@ impl LanTransferApp {
             remote_left_down: false,
             remote_right_down: false,
             remote_last_sent_pos: None,
+            remote_last_move_sent_at: Instant::now() - Duration::from_secs(1),
+            remote_pending_move: None,
             remote_prev_maximized: None,
             remote_ime_buffer: String::new(),
             status,
@@ -1443,6 +1455,8 @@ impl LanTransferApp {
         self.remote_left_down = false;
         self.remote_right_down = false;
         self.remote_last_sent_pos = None;
+        self.remote_last_move_sent_at = Instant::now() - Duration::from_secs(1);
+        self.remote_pending_move = None;
         self.remote_ime_buffer.clear();
     }
 
@@ -1653,11 +1667,7 @@ impl LanTransferApp {
             }
         }
 
-        let mut remote_has_focus = false;
-        let mut remote_inside = false;
-        let mut remote_rect: Option<egui::Rect> = None;
-        let mut remote_draw_size: (f32, f32) = (1.0, 1.0);
-        let mut remote_frame_size: (f32, f32) = (1.0, 1.0);
+        let mut view_state: Option<RemoteViewState> = None;
         let mut ime_focus_resp: Option<egui::Response> = None;
 
         ui.group(|ui| {
@@ -1685,118 +1695,27 @@ impl LanTransferApp {
             );
 
             if self.remote_connected {
-                let (
-                    mods,
-                    pointer_pos,
-                    primary_pressed,
-                    primary_released,
-                    secondary_pressed,
-                    secondary_released,
-                ) = ctx.input(|i| {
+                let (pointer_pos, primary_pressed, secondary_pressed) = ctx.input(|i| {
                     (
-                        i.modifiers,
                         i.pointer.interact_pos().or(i.pointer.latest_pos()),
                         i.pointer.primary_pressed(),
-                        i.pointer.primary_released(),
                         i.pointer.secondary_pressed(),
-                        i.pointer.secondary_released(),
                     )
                 });
-
                 let inside = pointer_pos.is_some_and(|p| rect.contains(p));
-                remote_inside = inside;
-                remote_rect = Some(rect);
-                remote_draw_size = (w, h);
-                remote_frame_size = (iw, ih);
-
                 if (inside && (primary_pressed || secondary_pressed))
                     || resp.clicked()
                     || resp.drag_started()
                 {
                     resp.request_focus();
                 }
-                remote_has_focus = resp.has_focus();
-
-                let can_send_pointer =
-                    remote_has_focus && (inside || self.remote_left_down || self.remote_right_down);
-
-                if can_send_pointer {
-                    if let Some(pos) = pointer_pos {
-                        let rel = pos - rect.min;
-                        let fx = (rel.x * (iw / w)).clamp(0.0, iw - 1.0);
-                        let fy = (rel.y * (ih / h)).clamp(0.0, ih - 1.0);
-                        let fx_i = fx.round() as i32;
-                        let fy_i = fy.round() as i32;
-                        if self.remote_last_sent_pos != Some((fx_i, fy_i)) {
-                            self.remote_last_sent_pos = Some((fx_i, fy_i));
-                            let _ = api::remote_client::remote_client_send_pointer(
-                                RemotePointerEventDto {
-                                    kind: "move".to_string(),
-                                    x: fx as f64,
-                                    y: fy as f64,
-                                    button: 1,
-                                    delta: 0.0,
-                                    modifiers: Self::modifiers_to_mask(mods),
-                                },
-                            );
-                        }
-
-                        if primary_pressed && inside && !self.remote_left_down {
-                            self.remote_left_down = true;
-                            let _ = api::remote_client::remote_client_send_pointer(
-                                RemotePointerEventDto {
-                                    kind: "down".to_string(),
-                                    x: fx as f64,
-                                    y: fy as f64,
-                                    button: 1,
-                                    delta: 0.0,
-                                    modifiers: Self::modifiers_to_mask(mods),
-                                },
-                            );
-                        }
-                        if primary_released && self.remote_left_down {
-                            self.remote_left_down = false;
-                            let _ = api::remote_client::remote_client_send_pointer(
-                                RemotePointerEventDto {
-                                    kind: "up".to_string(),
-                                    x: fx as f64,
-                                    y: fy as f64,
-                                    button: 1,
-                                    delta: 0.0,
-                                    modifiers: Self::modifiers_to_mask(mods),
-                                },
-                            );
-                        }
-
-                        if secondary_pressed && inside && !self.remote_right_down {
-                            self.remote_right_down = true;
-                            let _ = api::remote_client::remote_client_send_pointer(
-                                RemotePointerEventDto {
-                                    kind: "down".to_string(),
-                                    x: fx as f64,
-                                    y: fy as f64,
-                                    button: 2,
-                                    delta: 0.0,
-                                    modifiers: Self::modifiers_to_mask(mods),
-                                },
-                            );
-                        }
-                        if secondary_released && self.remote_right_down {
-                            self.remote_right_down = false;
-                            let _ = api::remote_client::remote_client_send_pointer(
-                                RemotePointerEventDto {
-                                    kind: "up".to_string(),
-                                    x: fx as f64,
-                                    y: fy as f64,
-                                    button: 2,
-                                    delta: 0.0,
-                                    modifiers: Self::modifiers_to_mask(mods),
-                                },
-                            );
-                        }
-                    }
-                }
             }
+            view_state = Some(RemoteViewState {
+                rect,
+                draw_size: (w, h),
+                frame_size: (iw, ih),
+                has_focus: resp.has_focus(),
+            });
         });
 
         if self.remote_connected {
@@ -1819,96 +1738,211 @@ impl LanTransferApp {
 
         if let Some(r) = &ime_focus_resp {
             r.request_focus();
-            remote_has_focus = r.has_focus();
+            if let Some(v) = view_state.as_mut() {
+                v.has_focus = r.has_focus();
+            }
         }
 
-        if self.remote_connected && remote_has_focus {
-            if !self.remote_ime_buffer.is_empty() {
-                let text = std::mem::take(&mut self.remote_ime_buffer);
-                for ch in text.chars() {
-                    let _ = api::remote_client::remote_client_send_key(RemoteKeyEventDto {
-                        key_code: ch as i32,
-                        down: true,
-                        modifiers: 0,
-                    });
+        self.handle_remote_input(ctx, view_state);
+    }
+
+    fn handle_remote_input(&mut self, ctx: &egui::Context, view_state: Option<RemoteViewState>) {
+        if !self.remote_connected {
+            return;
+        }
+        let Some(view) = view_state else {
+            return;
+        };
+        if !view.has_focus {
+            return;
+        }
+
+        self.handle_remote_pointer(ctx, view);
+        self.handle_remote_keyboard_and_wheel(ctx, view);
+    }
+
+    fn handle_remote_pointer(&mut self, ctx: &egui::Context, view: RemoteViewState) {
+        let (mods, pointer_pos, primary_pressed, primary_released, secondary_pressed, secondary_released) =
+            ctx.input(|i| {
+                (
+                    i.modifiers,
+                    i.pointer.interact_pos().or(i.pointer.latest_pos()),
+                    i.pointer.primary_pressed(),
+                    i.pointer.primary_released(),
+                    i.pointer.secondary_pressed(),
+                    i.pointer.secondary_released(),
+                )
+            });
+        let mod_mask = Self::modifiers_to_mask(mods);
+
+        if let Some(pos) = pointer_pos {
+            let inside = view.rect.contains(pos);
+            let can_send_pointer = inside || self.remote_left_down || self.remote_right_down;
+            if can_send_pointer {
+                let rel = pos - view.rect.min;
+                let (w, h) = view.draw_size;
+                let (iw, ih) = view.frame_size;
+                let fx = (rel.x * (iw / w)).clamp(0.0, iw - 1.0);
+                let fy = (rel.y * (ih / h)).clamp(0.0, ih - 1.0);
+                let fx_i = fx.round() as i32;
+                let fy_i = fy.round() as i32;
+
+                if self.remote_last_sent_pos != Some((fx_i, fy_i)) {
+                    self.remote_pending_move = Some((fx as f64, fy as f64, mod_mask));
+                }
+
+                if self.remote_last_move_sent_at.elapsed() >= Duration::from_millis(16) {
+                    if let Some((x, y, m)) = self.remote_pending_move.take() {
+                        let _ = api::remote_client::remote_client_send_pointer(
+                            RemotePointerEventDto {
+                                kind: "move".to_string(),
+                                x,
+                                y,
+                                button: 1,
+                                delta: 0.0,
+                                modifiers: m,
+                            },
+                        );
+                        self.remote_last_sent_pos = Some((fx_i, fy_i));
+                        self.remote_last_move_sent_at = Instant::now();
+                    }
+                }
+
+                if primary_pressed && inside && !self.remote_left_down {
+                    self.remote_left_down = true;
+                    let _ = api::remote_client::remote_client_send_pointer(
+                        RemotePointerEventDto {
+                            kind: "down".to_string(),
+                            x: fx as f64,
+                            y: fy as f64,
+                            button: 1,
+                            delta: 0.0,
+                            modifiers: mod_mask,
+                        },
+                    );
+                }
+
+                if secondary_pressed && inside && !self.remote_right_down {
+                    self.remote_right_down = true;
+                    let _ = api::remote_client::remote_client_send_pointer(
+                        RemotePointerEventDto {
+                            kind: "down".to_string(),
+                            x: fx as f64,
+                            y: fy as f64,
+                            button: 2,
+                            delta: 0.0,
+                            modifiers: mod_mask,
+                        },
+                    );
                 }
             }
+        }
 
-            let events = ctx.input(|i| i.events.clone());
-            for e in events {
-                match e {
-                    egui::Event::Key {
-                        key,
-                        pressed,
-                        modifiers,
-                        ..
-                    } => {
-                        if let Some(code) = Self::egui_key_to_rd_code(key) {
+        if primary_released && self.remote_left_down {
+            self.remote_left_down = false;
+            let (x, y) = self
+                .remote_last_sent_pos
+                .map(|(x, y)| (x as f64, y as f64))
+                .unwrap_or((0.0, 0.0));
+            let _ = api::remote_client::remote_client_send_pointer(RemotePointerEventDto {
+                kind: "up".to_string(),
+                x,
+                y,
+                button: 1,
+                delta: 0.0,
+                modifiers: mod_mask,
+            });
+        }
+        if secondary_released && self.remote_right_down {
+            self.remote_right_down = false;
+            let (x, y) = self
+                .remote_last_sent_pos
+                .map(|(x, y)| (x as f64, y as f64))
+                .unwrap_or((0.0, 0.0));
+            let _ = api::remote_client::remote_client_send_pointer(RemotePointerEventDto {
+                kind: "up".to_string(),
+                x,
+                y,
+                button: 2,
+                delta: 0.0,
+                modifiers: mod_mask,
+            });
+        }
+    }
+
+    fn handle_remote_keyboard_and_wheel(&mut self, ctx: &egui::Context, view: RemoteViewState) {
+        if !self.remote_ime_buffer.is_empty() {
+            let text = std::mem::take(&mut self.remote_ime_buffer);
+            for ch in text.chars() {
+                let _ = api::remote_client::remote_client_send_key(RemoteKeyEventDto {
+                    key_code: ch as i32,
+                    down: true,
+                    modifiers: 0,
+                });
+            }
+        }
+
+        let events = ctx.input(|i| i.events.clone());
+        for e in events {
+            match e {
+                egui::Event::Key {
+                    key,
+                    pressed,
+                    modifiers,
+                    ..
+                } => {
+                    if let Some(code) = Self::egui_key_to_rd_code(key) {
+                        let _ = api::remote_client::remote_client_send_key(RemoteKeyEventDto {
+                            key_code: code,
+                            down: pressed,
+                            modifiers: Self::modifiers_to_mask(modifiers),
+                        });
+                    } else if let Some(ch) = Self::egui_key_to_char(key, modifiers) {
+                        if modifiers.ctrl || modifiers.alt || modifiers.command || modifiers.mac_cmd {
                             let _ = api::remote_client::remote_client_send_key(RemoteKeyEventDto {
-                                key_code: code,
+                                key_code: ch as i32,
                                 down: pressed,
                                 modifiers: Self::modifiers_to_mask(modifiers),
                             });
-                        } else if let Some(ch) = Self::egui_key_to_char(key, modifiers) {
-                            if modifiers.ctrl
-                                || modifiers.alt
-                                || modifiers.command
-                                || modifiers.mac_cmd
-                            {
-                                let _ =
-                                    api::remote_client::remote_client_send_key(RemoteKeyEventDto {
-                                        key_code: ch as i32,
-                                        down: pressed,
-                                        modifiers: Self::modifiers_to_mask(modifiers),
-                                    });
-                            }
                         }
                     }
-                    egui::Event::MouseWheel {
-                        unit,
-                        delta,
-                        modifiers,
-                    } => {
-                        if !remote_inside {
-                            continue;
-                        }
-                        let Some(rect) = remote_rect else {
-                            continue;
-                        };
-                        let (w, h) = remote_draw_size;
-                        let (iw, ih) = remote_frame_size;
-                        let pos =
-                            ctx.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos()));
-                        let Some(pos) = pos else {
-                            continue;
-                        };
-                        if !rect.contains(pos) {
-                            continue;
-                        }
-                        let dy = match unit {
-                            egui::MouseWheelUnit::Point => delta.y,
-                            egui::MouseWheelUnit::Line => delta.y * 50.0,
-                            egui::MouseWheelUnit::Page => delta.y * 500.0,
-                        };
-                        let lines = (-dy / 50.0).round().clamp(-32.0, 32.0);
-                        if lines == 0.0 {
-                            continue;
-                        }
-                        let rel = pos - rect.min;
-                        let fx = (rel.x * (iw / w)).clamp(0.0, iw - 1.0);
-                        let fy = (rel.y * (ih / h)).clamp(0.0, ih - 1.0);
-                        let _ =
-                            api::remote_client::remote_client_send_pointer(RemotePointerEventDto {
-                                kind: "scroll".to_string(),
-                                x: fx as f64,
-                                y: fy as f64,
-                                button: 1,
-                                delta: lines as f64,
-                                modifiers: Self::modifiers_to_mask(modifiers),
-                            });
-                    }
-                    _ => {}
                 }
+                egui::Event::MouseWheel {
+                    unit,
+                    delta,
+                    modifiers,
+                } => {
+                    let pos = ctx.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos()));
+                    let Some(pos) = pos else {
+                        continue;
+                    };
+                    if !view.rect.contains(pos) {
+                        continue;
+                    }
+                    let dy = match unit {
+                        egui::MouseWheelUnit::Point => delta.y,
+                        egui::MouseWheelUnit::Line => delta.y * 50.0,
+                        egui::MouseWheelUnit::Page => delta.y * 500.0,
+                    };
+                    let lines = (-dy / 50.0).round().clamp(-32.0, 32.0);
+                    if lines == 0.0 {
+                        continue;
+                    }
+                    let rel = pos - view.rect.min;
+                    let (w, h) = view.draw_size;
+                    let (iw, ih) = view.frame_size;
+                    let fx = (rel.x * (iw / w)).clamp(0.0, iw - 1.0);
+                    let fy = (rel.y * (ih / h)).clamp(0.0, ih - 1.0);
+                    let _ = api::remote_client::remote_client_send_pointer(RemotePointerEventDto {
+                        kind: "scroll".to_string(),
+                        x: fx as f64,
+                        y: fy as f64,
+                        button: 1,
+                        delta: lines as f64,
+                        modifiers: Self::modifiers_to_mask(modifiers),
+                    });
+                }
+                _ => {}
             }
         }
     }
